@@ -51,8 +51,12 @@ def get_text(base, path):
 # Independent brute-force oracle (canonical colorings only)
 # --------------------------------------------------------------------------
 
-def brute_force(fragments, conflict_edges, stitch_edges):
-    """Return (best_cost, [canonical optimal color sequences])."""
+def brute_force(fragments, conflict_edges, stitch_edges, adjacency_edges=None):
+    """Return (best_cost, [canonical optimal color sequences]).
+
+    When ``adjacency_edges`` is supplied, only colorings in which every used
+    mask's fragments are mutually reachable through adjacency edges count.
+    """
     order = sorted(fragments)
     n = len(order)
     pos = {v: i for i, v in enumerate(order)}
@@ -64,6 +68,25 @@ def brute_force(fragments, conflict_edges, stitch_edges):
     for a, b, w in stitch_edges:
         st[pos[a]].append((pos[b], w))
         st[pos[b]].append((pos[a], w))
+    adj = [[] for _ in range(n)]
+    if adjacency_edges is not None:
+        for a, b in adjacency_edges:
+            adj[pos[a]].append(pos[b])
+            adj[pos[b]].append(pos[a])
+
+    def connected(seq, k):
+        members = [i for i, c in enumerate(seq) if c == k]
+        if len(members) <= 1:
+            return True
+        seen = {members[0]}
+        stack = [members[0]]
+        while stack:
+            i = stack.pop()
+            for j in adj[i]:
+                if seq[j] == k and j not in seen:
+                    seen.add(j)
+                    stack.append(j)
+        return len(seen) == len(members)
 
     best = None
     sols = []
@@ -74,6 +97,10 @@ def brute_force(fragments, conflict_edges, stitch_edges):
         if best is not None and cost > best:
             return
         if i == n:
+            if adjacency_edges is not None and not all(
+                connected(colors, k) for k in (0, 1, 2)
+            ):
+                return
             if best is None or cost < best:
                 best = cost
                 sols = [tuple(colors)]
@@ -248,6 +275,154 @@ def check_itemized_validation(base):
         assert expected in locs, f"missing error for {expected}"
 
 
+def check_connectivity_summary(body, fragments, adjacency):
+    """Reported adopted edges must connect every used mask's fragments."""
+    order = sorted(fragments)
+    summary = body.get("connectivity")
+    assert summary is not None, "contiguous response must include connectivity"
+    assert summary.get("enabled") is True
+    adj_set = {tuple(sorted(e)) for e in adjacency}
+    by_color = {k: [] for k in (0, 1, 2)}
+    for f in order:
+        by_color[body["assignment"][str(f)]].append(f)
+    covered = []
+    for entry in summary["masks"]:
+        k = entry["mask"]
+        assert entry["fragments"] == sorted(by_color[k]), f"mask {k} coverage mismatch"
+        covered.extend(entry["fragments"])
+        neigh = {f: set() for f in entry["fragments"]}
+        for a, b in entry["adjacency_edges"]:
+            assert tuple(sorted((a, b))) in adj_set, "adopted edge not in adjacency list"
+            assert body["assignment"][str(a)] == k == body["assignment"][str(b)]
+            neigh[a].add(b)
+            neigh[b].add(a)
+        frags = entry["fragments"]
+        if frags:
+            seen, stack = {frags[0]}, [frags[0]]
+            while stack:
+                v = stack.pop()
+                for w in neigh[v]:
+                    if w not in seen:
+                        seen.add(w)
+                        stack.append(w)
+            assert seen == set(frags), f"adopted edges do not connect mask {k}"
+    assert sorted(covered) == order, "connectivity summary does not cover all fragments"
+
+
+def check_contiguous_feasible(base):
+    fragments = [1, 2, 3, 4, 5, 6]
+    conflicts = [[1, 2], [3, 4]]
+    stitches = [{"pair": [2, 5], "weight": 4}, {"pair": [4, 6], "weight": 2}]
+    adjacency = [[1, 3], [3, 5], [2, 4], [4, 6]]
+    status, body = request(base, "/api/solve", {
+        "fragments": fragments,
+        "conflict_edges": conflicts,
+        "stitch_edges": stitches,
+        "contiguous": True,
+        "adjacency_edges": adjacency,
+    })
+    assert status == 200, f"HTTP {status}: {body}"
+    assert body["status"] == "optimal", body
+    triples = [(e["pair"][0], e["pair"][1], e["weight"]) for e in stitches]
+    best, sols = brute_force(fragments, conflicts, triples, adjacency)
+    assert best is not None, "brute force found the contiguous instance infeasible"
+    order = sorted(fragments)
+    seq = tuple(body["assignment"][str(f)] for f in order)
+    assert seq == min(sols), f"contiguous assignment {seq} not lex-min"
+    assert body["objective"] == best, (
+        f"contiguous objective {body['objective']} != {best}"
+    )
+    assert body["unique"] == (len(sols) == 1), (
+        f"unique={body['unique']}, brute force found {len(sols)}"
+    )
+    check_connectivity_summary(body, fragments, adjacency)
+    if body.get("witness"):
+        check_connectivity_summary(body["witness"], fragments, adjacency)
+    else:
+        assert len(sols) == 1
+
+
+def check_contiguous_blocked(base):
+    # Triangle 1-2-3 already consumes all three masks; fragment 4's only
+    # adjacency edge is 1-4, and 1,4 are forced different by conflict 1-4.
+    # The base problem (no connectivity) is feasible.
+    fragments = [1, 2, 3, 4]
+    conflicts = [[1, 2], [2, 3], [1, 3], [1, 4]]
+    adjacency = [[1, 4]]
+    status, body = request(base, "/api/solve", {
+        "fragments": fragments,
+        "conflict_edges": conflicts,
+        "contiguous": True,
+        "adjacency_edges": adjacency,
+    })
+    assert status == 200, f"HTTP {status}: {body}"
+    assert body["status"] == "infeasible", body
+    assert body.get("reason") == "connectivity_blocked", body
+    # Confirm the base model itself is feasible.
+    s0, b0 = request(base, "/api/solve", {"fragments": fragments, "conflict_edges": conflicts})
+    assert s0 == 200 and b0["status"] == "optimal", "base instance should be feasible"
+    # A genuinely uncolorable graph reports the conflict reason instead.
+    s1, b1 = request(base, "/api/solve", {
+        "fragments": fragments,
+        "conflict_edges": [[a, b] for a in fragments for b in fragments if a < b],
+        "contiguous": True,
+        "adjacency_edges": adjacency,
+    })
+    assert s1 == 200 and b1["status"] == "infeasible"
+    assert b1.get("reason") == "conflict_graph", b1
+
+
+def check_contiguous_off_mode_regression(base):
+    # Without the flag the request/response shape is the original one.
+    status, body = request(base, "/api/solve", {
+        "fragments": [1, 2, 3, 4],
+        "contiguous": False,
+        "adjacency_edges": [[1, 9], [2, 2]],  # ignored entirely when off
+    })
+    assert status == 200, f"HTTP {status}: {body}"
+    assert body["status"] == "optimal"
+    assert "connectivity" not in body and "reason" not in body
+    assert set(body) == {
+        "status", "objective", "unique", "assignment", "cut_stitches", "witness"
+    }
+    status, body = request(base, "/api/solve", {
+        "fragments": [1, 2, 3, 4],
+        "conflict_edges": [[a, b] for a in (1, 2, 3, 4) for b in (1, 2, 3, 4) if a < b],
+    })
+    assert body == {"status": "infeasible"}, "off-mode infeasible body changed"
+
+
+def check_adjacency_validation(base):
+    status, body = request(base, "/api/solve", {
+        "fragments": [1, 2, 3, 4],
+        "contiguous": True,
+        "adjacency_edges": [
+            [1, 9],
+            [2, 2],
+            [1, 2],
+            [2, 1],
+            "nope",
+        ],
+    })
+    assert status == 400, f"expected HTTP 400, got {status}"
+    locs = {e["loc"] for e in body["errors"]}
+    for expected in (
+        "adjacency_edges[0]",  # unknown fragment
+        "adjacency_edges[1]",  # self loop
+        "adjacency_edges[3]",  # duplicate undirected pair
+        "adjacency_edges[4]",  # malformed
+    ):
+        assert expected in locs, f"missing error for {expected}: {locs}"
+    # Empty adjacency with the mode on is invalid.
+    status, body = request(base, "/api/solve", {
+        "fragments": [1, 2, 3, 4],
+        "contiguous": True,
+        "adjacency_edges": [],
+    })
+    assert status == 400
+    assert any(e["loc"] == "adjacency_edges" for e in body["errors"])
+
+
 # --------------------------------------------------------------------------
 # Runner
 # --------------------------------------------------------------------------
@@ -268,6 +443,10 @@ def main():
         ("带权实例与暴力枚举一致", check_weighted_instance),
         ("无解情形明确区分", check_infeasible),
         ("输入错误逐项返回", check_itemized_validation),
+        ("连续掩模岛：可行实例与暴力枚举一致", check_contiguous_feasible),
+        ("连续掩模岛：连续性阻断明确说明", check_contiguous_blocked),
+        ("连续掩模岛：关闭模式请求/响应回归", check_contiguous_off_mode_regression),
+        ("连续掩模岛：邻接输入逐项拒绝", check_adjacency_validation),
     ]
 
     failures = 0

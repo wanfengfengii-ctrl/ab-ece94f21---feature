@@ -4,6 +4,17 @@ const EXAMPLE = {
   fragments: '1 2 3 4 5 6 7 8',
   conflicts: '1 2\n1 3\n2 3\n3 4\n4 5\n4 6\n5 6',
   stitches: '1 4 9\n2 5 4\n3 6 2\n5 8 2\n6 7 3\n7 8 1',
+  contiguous: false,
+  adjacency: '',
+}
+
+const CONTIGUOUS_EXAMPLE = {
+  fragments: '1 2 3 4 5 6 7 8',
+  conflicts: '1 2\n2 3\n1 3\n4 5',
+  stitches: '3 4 2\n5 6 3\n6 7 1',
+  contiguous: true,
+  adjacency:
+    '1 4\n4 7\n7 8\n2 5\n5 8\n3 6\n6 8',
 }
 
 const MASKS = [
@@ -119,13 +130,59 @@ function CutStitchTable({ cutStitches, assignment }) {
   )
 }
 
+function ConnectivityPanel({ summary }) {
+  if (!summary || !summary.enabled) return null
+  return (
+    <div className="connectivity">
+      <h3>连续掩模岛复核（{summary.masks.length} 张掩模实际使用）</h3>
+      <p className="muted connectivity-hint">
+        每个掩模下列出其全部片段与“采用邻接边”：仅沿这些边即可从任一覆盖片段到达其余片段。
+      </p>
+      <div className="island-grid">
+        {summary.masks.map((entry) => (
+          <div className="island-card" key={entry.mask}>
+            <div className="island-head">
+              <MaskChip mask={entry.mask} />
+              <span className="muted">覆盖片段 {entry.fragments.length} 个 · 采用边 {entry.adjacency_edges.length} 条</span>
+            </div>
+            <div className="island-fragments">
+              {entry.fragments.map((f) => (
+                <code key={f} className="frag-tag">{f}</code>
+              ))}
+            </div>
+            {entry.adjacency_edges.length > 0 ? (
+              <div className="island-edges">
+                {entry.adjacency_edges.map(([a, b], i) => (
+                  <code key={`${a}-${b}-${i}`} className="edge-tag">
+                    {a}—{b}
+                  </code>
+                ))}
+              </div>
+            ) : (
+              <p className="muted singleton-hint">仅含 1 个片段，无需邻接边。</p>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 export default function App() {
   const [fragmentsText, setFragmentsText] = useState('')
   const [conflictsText, setConflictsText] = useState('')
   const [stitchesText, setStitchesText] = useState('')
+  const [contiguous, setContiguous] = useState(false)
+  const [adjacencyText, setAdjacencyText] = useState('')
   const [errors, setErrors] = useState([])
   const [result, setResult] = useState(null)
   const [loading, setLoading] = useState(false)
+
+  // Editing any input or the mode toggle invalidates the previous result.
+  function invalidate() {
+    setResult(null)
+    setErrors([])
+  }
 
   async function handleSolve() {
     // A new attempt always clears previous results first.
@@ -135,7 +192,15 @@ export default function App() {
     const fragments = parseFragments(fragmentsText)
     const conflicts = parseEdgeLines(conflictsText, { weighted: false, label: '冲突边' })
     const stitches = parseEdgeLines(stitchesText, { weighted: true, label: '缝合边' })
-    const parseErrors = [...fragments.errors, ...conflicts.errors, ...stitches.errors]
+    const adjacency = contiguous
+      ? parseEdgeLines(adjacencyText, { weighted: false, label: '邻接边' })
+      : { edges: [], errors: [] }
+    const parseErrors = [
+      ...fragments.errors,
+      ...conflicts.errors,
+      ...stitches.errors,
+      ...adjacency.errors,
+    ]
     if (parseErrors.length) {
       setErrors(parseErrors)
       return
@@ -143,14 +208,19 @@ export default function App() {
 
     setLoading(true)
     try {
+      const payload = {
+        fragments: fragments.values,
+        conflict_edges: conflicts.edges,
+        stitch_edges: stitches.edges,
+      }
+      if (contiguous) {
+        payload.contiguous = true
+        payload.adjacency_edges = adjacency.edges
+      }
       const resp = await fetch('/api/solve', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          fragments: fragments.values,
-          conflict_edges: conflicts.edges,
-          stitch_edges: stitches.edges,
-        }),
+        body: JSON.stringify(payload),
       })
       const body = await resp.json().catch(() => null)
       if (!resp.ok) {
@@ -175,6 +245,18 @@ export default function App() {
     setFragmentsText(EXAMPLE.fragments)
     setConflictsText(EXAMPLE.conflicts)
     setStitchesText(EXAMPLE.stitches)
+    setContiguous(false)
+    setAdjacencyText('')
+    setErrors([])
+    setResult(null)
+  }
+
+  function handleContiguousExample() {
+    setFragmentsText(CONTIGUOUS_EXAMPLE.fragments)
+    setConflictsText(CONTIGUOUS_EXAMPLE.conflicts)
+    setStitchesText(CONTIGUOUS_EXAMPLE.stitches)
+    setContiguous(true)
+    setAdjacencyText(CONTIGUOUS_EXAMPLE.adjacency)
     setErrors([])
     setResult(null)
   }
@@ -183,6 +265,8 @@ export default function App() {
     setFragmentsText('')
     setConflictsText('')
     setStitchesText('')
+    setContiguous(false)
+    setAdjacencyText('')
     setErrors([])
     setResult(null)
   }
@@ -205,7 +289,10 @@ export default function App() {
             <textarea
               rows={3}
               value={fragmentsText}
-              onChange={(e) => setFragmentsText(e.target.value)}
+              onChange={(e) => {
+                setFragmentsText(e.target.value)
+                invalidate()
+              }}
               placeholder="例如：1 2 3 4 5 6"
               spellCheck={false}
             />
@@ -213,9 +300,12 @@ export default function App() {
           <label className="field">
             <span className="field-label">冲突边（每行一条：片段A 片段B）</span>
             <textarea
-              rows={6}
+              rows={5}
               value={conflictsText}
-              onChange={(e) => setConflictsText(e.target.value)}
+              onChange={(e) => {
+                setConflictsText(e.target.value)
+                invalidate()
+              }}
               placeholder={'例如：\n1 2\n2 3'}
               spellCheck={false}
             />
@@ -223,18 +313,58 @@ export default function App() {
           <label className="field">
             <span className="field-label">缝合边（每行一条：片段A 片段B 正整数权重）</span>
             <textarea
-              rows={6}
+              rows={5}
               value={stitchesText}
-              onChange={(e) => setStitchesText(e.target.value)}
+              onChange={(e) => {
+                setStitchesText(e.target.value)
+                invalidate()
+              }}
               placeholder={'例如：\n1 3 5\n2 4 2'}
               spellCheck={false}
             />
           </label>
+
+          <div className="toggle-row">
+            <label className="toggle">
+              <input
+                type="checkbox"
+                checked={contiguous}
+                onChange={(e) => {
+                  setContiguous(e.target.checked)
+                  invalidate()
+                }}
+              />
+              <span>
+                启用<strong>连续掩模岛</strong>：每张实际使用的掩模中，
+                所有片段必须仅沿下方邻接边互达
+              </span>
+            </label>
+          </div>
+
+          {contiguous && (
+            <label className="field">
+              <span className="field-label">
+                无向邻接边（每行一条：片段A 片段B）——同掩模连通的唯一依据，至少一条
+              </span>
+              <textarea
+                rows={5}
+                value={adjacencyText}
+                onChange={(e) => {
+                  setAdjacencyText(e.target.value)
+                  invalidate()
+                }}
+                placeholder={'例如：\n1 4\n2 5'}
+                spellCheck={false}
+              />
+            </label>
+          )}
+
           <div className="actions">
             <button className="primary" onClick={handleSolve} disabled={loading}>
               {loading ? '求解中…' : '求解'}
             </button>
             <button onClick={handleExample}>载入示例</button>
+            <button onClick={handleContiguousExample}>连续掩模岛示例</button>
             <button onClick={handleClear}>清空</button>
           </div>
 
@@ -265,7 +395,15 @@ export default function App() {
           {result && result.status === 'infeasible' && (
             <div className="banner banner-infeasible">
               <strong>无解</strong>
-              <span>冲突约束在三张掩模下不可满足（冲突图不可三染色），请调整冲突边或片段集合。</span>
+              {result.reason === 'connectivity_blocked' ? (
+                <span>
+                  连续性阻断：忽略连续掩模岛要求时冲突与缝合约束原本可解，
+                  但不存在一种三掩模分配能让每张掩模的片段仅沿所给邻接边互达。
+                  请补充邻接边或调整冲突/缝合约束。
+                </span>
+              ) : (
+                <span>冲突约束在三张掩模下不可满足（冲突图不可三染色），请调整冲突边或片段集合。</span>
+              )}
             </div>
           )}
 
@@ -284,6 +422,8 @@ export default function App() {
               <h3>掩模分配</h3>
               <AssignmentGrid assignment={result.assignment} />
 
+              {result.connectivity && <ConnectivityPanel summary={result.connectivity} />}
+
               <h3>被切开的缝合边（{result.cut_stitches.length} 条）</h3>
               <CutStitchTable cutStitches={result.cut_stitches} assignment={result.assignment} />
 
@@ -291,6 +431,9 @@ export default function App() {
                 <div className="witness">
                   <h3>另一份不同的最优见证</h3>
                   <AssignmentGrid assignment={result.witness.assignment} />
+                  {result.witness.connectivity && (
+                    <ConnectivityPanel summary={result.witness.connectivity} />
+                  )}
                   <h4>见证方案被切开的缝合边（{result.witness.cut_stitches.length} 条）</h4>
                   <CutStitchTable
                     cutStitches={result.witness.cut_stitches}

@@ -296,3 +296,86 @@ button:disabled {
   border-top: 1px dashed var(--border);
   padding-top: 4px;
 }
+
+.toggle-row {
+  margin: 4px 0 12px;
+}
+
+.toggle {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  background: #0d1220;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-size: 13px;
+  line-height: 1.5;
+  cursor: pointer;
+}
+
+.toggle input {
+  margin-top: 2px;
+  width: 16px;
+  height: 16px;
+  accent-color: var(--accent);
+}
+
+.connectivity {
+  margin: 18px 0 4px;
+}
+
+.connectivity-hint {
+  font-size: 12.5px;
+  margin: 4px 0 10px;
+}
+
+.island-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 10px;
+}
+
+.island-card {
+  background: #0d1220;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px;
+}
+
+.island-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 10px;
+  font-size: 12px;
+}
+
+.island-fragments,
+.island-edges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.frag-tag,
+.edge-tag {
+  background: #1a2338;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 2px 8px;
+  font-size: 12px;
+  color: var(--text);
+}
+
+.edge-tag {
+  border-color: var(--accent);
+  color: #9dbdff;
+}
+
+.singleton-hint {
+  font-size: 12px;
+  margin: 0;
+}

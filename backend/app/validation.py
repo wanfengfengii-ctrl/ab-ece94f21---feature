@@ -130,6 +130,31 @@ def validate_payload(data):
         data.get("stitch_edges"), "stitch_edges", True, frag_set, errors
     )
 
+    # "Continuous mask islands" is opt-in; a missing flag means off and the
+    # request/response stay byte-compatible with the original API.
+    contiguous_raw = data.get("contiguous", False)
+    if not isinstance(contiguous_raw, bool):
+        errors.append(_err("contiguous", "contiguous 必须是布尔值 true/false"))
+        contiguous = False
+    else:
+        contiguous = contiguous_raw
+
+    adjacency_pairs = set()
+    adjacency = []
+    if contiguous:
+        raw_adjacency = data.get("adjacency_edges", [])
+        adjacency_pairs, adj_entries = _validate_edges(
+            raw_adjacency, "adjacency_edges", False, frag_set, errors
+        )
+        adjacency = [(a, b) for _i, a, b, _w in adj_entries]
+        if not adjacency_pairs:
+            errors.append(
+                _err(
+                    "adjacency_edges",
+                    "启用连续掩模岛时至少需要一条邻接边，否则每个非空掩模至多容纳一个片段",
+                )
+            )
+
     # An undirected pair may not appear in both edge types.
     for i, a, b, _w in stitches:
         key = (a, b) if a < b else (b, a)
@@ -148,4 +173,7 @@ def validate_payload(data):
         "conflict_edges": [(a, b) for _i, a, b, _w in conflicts],
         "stitch_edges": [(a, b, w) for _i, a, b, w in stitches],
     }
+    if contiguous:
+        model["contiguous"] = True
+        model["adjacency_edges"] = adjacency
     return errors, model
