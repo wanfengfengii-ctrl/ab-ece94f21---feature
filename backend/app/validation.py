@@ -111,6 +111,15 @@ def _validate_edges(raw, field, weighted, frag_set, errors):
     return pairs, edges
 
 
+def _validate_contiguous(raw, errors):
+    if raw is None:
+        return False
+    if not isinstance(raw, bool):
+        errors.append(_err("contiguous", "contiguous 必须是布尔值（true/false）"))
+        return False
+    return raw
+
+
 def validate_payload(data):
     """Validate a raw request body.
 
@@ -121,6 +130,7 @@ def validate_payload(data):
         return [_err("body", "请求体必须是 JSON 对象")], None
 
     errors = []
+    contiguous = _validate_contiguous(data.get("contiguous"), errors)
     fragments = _validate_fragments(data.get("fragments"), errors)
     frag_set = set(fragments)
     conflict_pairs, conflicts = _validate_edges(
@@ -128,6 +138,9 @@ def validate_payload(data):
     )
     _stitch_pairs, stitches = _validate_edges(
         data.get("stitch_edges"), "stitch_edges", True, frag_set, errors
+    )
+    _adj_pairs, adjacency = _validate_edges(
+        data.get("adjacency_edges"), "adjacency_edges", False, frag_set, errors
     )
 
     # An undirected pair may not appear in both edge types.
@@ -147,5 +160,7 @@ def validate_payload(data):
         "fragments": fragments,
         "conflict_edges": [(a, b) for _i, a, b, _w in conflicts],
         "stitch_edges": [(a, b, w) for _i, a, b, w in stitches],
+        "adjacency_edges": [(a, b) for _i, a, b, _w in adjacency],
+        "contiguous": contiguous,
     }
     return errors, model
